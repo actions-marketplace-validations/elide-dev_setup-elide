@@ -10,8 +10,9 @@ export enum OptionName {
   ARCH = 'arch',
   EXPORT_PATH = 'export_path',
   CUSTOM_URL = 'custom_url',
+  VERSION_TAG = 'version_tag',
   TOKEN = 'token',
-  TARGET = 'target',
+  INSTALL_PATH = 'install_path',
   FORCE = 'force'
 }
 
@@ -32,11 +33,11 @@ export interface ElideSetupActionOptions {
   // Desired arch for the downloaded binary. If not provided, the current arch is resolved.
   arch: 'amd64' | 'aarch64'
 
-  // Directory path where Elide should be installed; if none is provided, `~/elide` is used.
-  target: string
+  // Directory path where Elide should be installed; if none is provided, conventional location is used for GHA.
+  install_path: string
 
-  // Whether to leverage tool and action caching.
-  cache: boolean
+  // Whether to disable tool and action caching.
+  no_cache: boolean
 
   // Whether to force installation if a copy of Elide is already installed.
   force: boolean
@@ -44,11 +45,11 @@ export interface ElideSetupActionOptions {
   // Whether to pre-warm the installed copy of Elide; defaults to `true`.
   prewarm: boolean
 
-  // Whether to perform a self-test after installing Elide; defaults to `true`.
-  selftest: boolean
-
   // Custom download URL to use in place of interpreted download URLs.
   custom_url?: string
+
+  // Version tag corresponding to a custom download URL.
+  version_tag?: string
 
   // Custom GitHub token to use, or the workflow's default token, if any.
   token?: string
@@ -70,7 +71,7 @@ export const nixDefaultPath = path.resolve(os.homedir(), 'elide')
 export const configPath = path.resolve(os.homedir(), '.elide')
 
 /* istanbul ignore next */
-const defaultTarget =
+const defaultTargetPath =
   process.platform === 'win32' ? windowsDefaultPath : nixDefaultPath
 
 /**
@@ -78,14 +79,13 @@ const defaultTarget =
  */
 export const defaults: ElideSetupActionOptions = {
   version: 'latest',
-  cache: true,
+  no_cache: false,
   export_path: true,
   force: false,
-  selftest: true,
   prewarm: true,
   os: normalizeOs(process.platform),
   arch: normalizeArch(process.arch),
-  target: defaultTarget
+  install_path: defaultTargetPath
 }
 
 /**

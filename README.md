@@ -5,11 +5,6 @@
 [![CI](https://github.com/elide-dev/setup-elide/actions/workflows/ci.yml/badge.svg)](https://github.com/elide-dev/setup-elide/actions)
 [![Coverage](./.github/badges/coverage.svg)](https://codecov.io/gh/elide-dev/setup-elide)
 [![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v1.4-ff69b4.svg)](.github/CODE_OF_CONDUCT.md)
-[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Felide-dev%2Fsetup-elide.svg?type=shield&issueType=license)](https://app.fossa.com/projects/git%2Bgithub.com%2Felide-dev%2Fsetup-elide?ref=badge_shield&issueType=license)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=elide-dev_setup-elide&metric=reliability_rating&token=96b4edd8d390591aa7b096d919983e1c1d42cba9)](https://sonarcloud.io/summary/new_code?id=elide-dev_setup-elide)
-[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=elide-dev_setup-elide&metric=security_rating&token=96b4edd8d390591aa7b096d919983e1c1d42cba9)](https://sonarcloud.io/summary/new_code?id=elide-dev_setup-elide)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=elide-dev_setup-elide&metric=sqale_rating&token=96b4edd8d390591aa7b096d919983e1c1d42cba9)](https://sonarcloud.io/summary/new_code?id=elide-dev_setup-elide)
-
 
 This repository provides a [GitHub Action][0] to setup the [Elide][1] runtime within your workflows.
 
@@ -18,21 +13,21 @@ This repository provides a [GitHub Action][0] to setup the [Elide][1] runtime wi
 **Install the latest Elide version and add it to the `PATH`**
 ```yaml
   - name: "Setup: Elide"
-    uses: elide-dev/setup-elide@v1
+    uses: elide-dev/setup-elide@v2
 ```
 
 **Install a specific Elide version and add it to the `PATH`**
 ```yaml
   - name: "Setup: Elide"
-    uses: elide-dev/setup-elide@v1
+    uses: elide-dev/setup-elide@v2
     with:
-      version: 1.0.0-alpha7  # any tag from the `elide-dev/releases` repo
+      version: 1.0.0-beta1  # any tag from the `elide-dev/releases` repo; omit for latest
 ```
 
 **Install Elide but don't add it to the `PATH`**
 ```yaml
   - name: "Setup: Elide"
-    uses: elide-dev/setup-elide@v1
+    uses: elide-dev/setup-elide@v2
     with:
       export_path: false
 ```
@@ -48,7 +43,6 @@ The full suite of available options are below.
 | `arch`        | `string`     | (Current)                 | Arch to target; defaults to current platform |
 | `force`       | `boolean`    | `false`                   | Force installation over existing binary      |
 | `prewarm`     | `boolean`    | `true`                    | Warm up the runtime after installing         |
-| `selftest`    | `boolean`    | `true`                    | Perform a self-test after installing         |
 | `token`       | `string`     | `${{ env.GITHUB_TOKEN }}` | GitHub token to use for fetching assets      |
 | `export_path` | `boolean`    | `true`                    | Whether to install Elide onto the `PATH`     |
 
@@ -71,9 +65,11 @@ The full suite of available options are below.
       arch: amd64
       force: false
       prewarm: true
-      seltest: true
       export_path: true
 ```
+
+> [!IMPORTANT]
+> Elide supports Linux on amd64 and macOS on amd64/aarch64 at this time. Windows and Linux/aarch64 support are forthcoming.
 
 ## What is Elide?
 

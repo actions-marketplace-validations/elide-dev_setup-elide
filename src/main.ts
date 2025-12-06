@@ -1,7 +1,7 @@
 import * as core from '@actions/core'
 import * as io from '@actions/io'
 import { ActionOutputName, ElideSetupActionOutputs } from './outputs'
-import { prewarm, selftest, info, obtainVersion } from './command'
+import { prewarm, info, obtainVersion } from './command'
 
 import buildOptions, {
   OptionName,
@@ -67,8 +67,10 @@ export function notSupported(options: ElideSetupActionOptions): null | Error {
   const spec = `${options.os}-${options.arch}`
   switch (spec) {
     case 'linux-amd64':
-      return null
+    case 'linux-aarch64':
     case 'darwin-aarch64':
+    case 'darwin-amd64':
+    case 'windows-amd64':
       return null
     default:
       core.error(`Platform is not supported: ${spec}`)
@@ -81,7 +83,6 @@ export async function postInstall(
   options: ElideSetupActionOptions
 ): Promise<void> {
   if (options.prewarm) await prewarm(bin)
-  if (options.selftest) await selftest(bin)
   await info(bin)
 }
 
@@ -108,10 +109,10 @@ export async function run(
       ? buildOptions(options)
       : buildOptions({
           version: stringOption(OptionName.VERSION, 'latest'),
-          target: stringOption(
-            OptionName.TARGET,
+          install_path: stringOption(
+            OptionName.INSTALL_PATH,
             /* istanbul ignore next */
-            process.env.ELIDE_HOME || defaults.target
+            process.env.ELIDE_HOME || defaults.install_path
           ),
           os: normalizeOs(
             stringOption(OptionName.OS, process.platform) as string
@@ -121,7 +122,8 @@ export async function run(
           ),
           export_path: booleanOption(OptionName.EXPORT_PATH, true),
           token: stringOption(OptionName.TOKEN, process.env.GITHUB_TOKEN),
-          custom_url: stringOption(OptionName.CUSTOM_URL)
+          custom_url: stringOption(OptionName.CUSTOM_URL),
+          version_tag: stringOption(OptionName.VERSION_TAG)
         })
 
     // make sure the requested version, platform, and os triple is supported
@@ -143,10 +145,10 @@ export async function run(
 
         /* istanbul ignore next */
         if (
-          version !== effectiveOptions.version ||
-          effectiveOptions.version === 'latest'
+          version === effectiveOptions.version ||
+          effectiveOptions.version === 'local'
         ) {
-          core.warning(
+          core.info(
             `Existing Elide installation at version '${version}' was preserved`
           )
           core.setOutput(ActionOutputName.PATH, existing)

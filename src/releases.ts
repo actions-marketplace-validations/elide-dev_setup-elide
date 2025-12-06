@@ -5,8 +5,11 @@ import * as github from '@actions/github'
 import type { ElideSetupActionOptions } from './options'
 import { GITHUB_DEFAULT_HEADERS } from './config'
 import { obtainVersion } from './command'
+import { which, mv } from '@actions/io'
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 
-const downloadBase = 'https://dl.azr.elide.cloud'
+const downloadBase = 'https://gha.elide.zip'
 const downloadPathV1 = 'cli/v1/snapshot'
 
 /**
@@ -29,6 +32,9 @@ export type ElideVersionInfo = {
 export enum ArchiveType {
   // Release is compressed with `gzip`.
   GZIP = 'gzip',
+
+  // Release is compressed as a tarball with `xz`.
+  TXZ = 'txz',
 
   // Release is compressed with `zip`.
   ZIP = 'zip'
@@ -98,16 +104,22 @@ export interface DownloadedToolInfo {
  * @param options Effective options.
  * @return URL and archive type to use.
  */
-function buildDownloadUrl(
+async function buildDownloadUrl(
   options: ElideSetupActionOptions,
   version: ElideVersionInfo
-): { url: URL; archiveType: ArchiveType } {
+): Promise<{ url: URL; archiveType: ArchiveType }> {
   let ext = 'tgz'
   let archiveType = ArchiveType.GZIP
+  const hasXz = await which('xz')
+
   /* istanbul ignore next */
   if (options.os === ElideOS.WINDOWS) {
     ext = 'zip'
     archiveType = ArchiveType.ZIP
+  } else if (hasXz) {
+    // use xz if available
+    ext = 'txz'
+    archiveType = ArchiveType.TXZ
   }
 
   return {
@@ -125,6 +137,7 @@ function buildDownloadUrl(
  * @param archive Path to the archive.
  * @param elideHome Unpack target.
  * @param archiveType Type of archive to unpack.
+ * @param resolvedVersion Actual version (not a symbolic version)
  * @param options Options which apply to this action run.
  * @return Path to the unpacked release.
  */
@@ -132,6 +145,7 @@ async function unpackRelease(
   archive: string,
   elideHome: string,
   archiveType: ArchiveType,
+  resolvedVersion: string,
   options: ElideSetupActionOptions
 ): Promise<string> {
   let target: string
@@ -143,6 +157,8 @@ async function unpackRelease(
       )
       target = await toolCache.extractZip(archive, elideHome)
     } else {
+      const tarArchive = `${archive}.tar`
+
       switch (archiveType) {
         // extract as zip
         /* istanbul ignore next */
@@ -158,7 +174,52 @@ async function unpackRelease(
           core.debug(
             `Extracting as tgz on Unix or Linux, from: ${archive}, to: ${elideHome}`
           )
-          target = await toolCache.extractTar(archive, elideHome)
+          target = await toolCache.extractTar(archive, elideHome, [
+            'xz',
+            '--strip-components=1'
+          ])
+          break
+
+        // extract as txz
+        case ArchiveType.TXZ:
+          {
+            core.debug(
+              `Extracting as txz on Unix or Linux, from: ${archive}, to: ${elideHome}`
+            )
+            const xzTool = await which('xz')
+            if (!xzTool) {
+              throw new Error('xz command not found, please install xz-utils')
+            }
+            core.debug(`xz command found at: ${xzTool}`)
+
+            // xz is moody about archive names. so rename it.
+            const xzArchive = `${tarArchive}.xz`
+            await mv(archive, xzArchive, { force: false })
+
+            // check if the archive exists
+            if (!existsSync(xzArchive)) {
+              throw new Error(
+                `Archive not found (renaming failed?): ${xzArchive} (renamed)`
+              )
+            }
+
+            // unpack using xz first; we pass `-v` for verbose and `-d` to decompress
+            const xzRun = spawnSync(xzTool, ['-v', '-d', xzArchive], {
+              encoding: 'utf-8'
+            })
+            if (xzRun.status !== 0) {
+              console.log('XZ output: ', xzRun.stdout)
+              console.error('XZ error output: ', xzRun.stderr)
+              throw new Error(`xz extraction failed: ${xzRun.stderr}`)
+            }
+            core.debug(`XZ extraction completed: ${xzRun.status}`)
+          }
+
+          // now extract the tarball
+          target = await toolCache.extractTar(tarArchive, elideHome, [
+            'x',
+            '--strip-components=1'
+          ])
           break
       }
     }
@@ -167,6 +228,15 @@ async function unpackRelease(
     core.warning(`Failed to extract Elide release: ${err}`)
     target = elideHome
   }
+
+  // determine if the archive has a directory root
+  if (
+    resolvedVersion === '1.0.0-alpha7' ||
+    resolvedVersion === '1.0.0-alpha8'
+  ) {
+    return target // no directory root: early release
+  }
+  core.debug(`Elide release ${resolvedVersion} extracted at ${target}`)
   return target
 }
 
@@ -184,7 +254,7 @@ export async function resolveLatestVersion(
     'GET /repos/{owner}/{repo}/releases/latest',
     {
       owner: 'elide-dev',
-      repo: 'releases',
+      repo: 'elide',
       headers: GITHUB_DEFAULT_HEADERS
     }
   )
@@ -213,43 +283,54 @@ async function maybeDownload(
   options: ElideSetupActionOptions
 ): Promise<ElideRelease> {
   // build download URL, use result from cache or disk
-  const { url, archiveType } = buildDownloadUrl(options, version)
-  core.info(`Installing from URL: ${url} (type: ${archiveType})`)
+  const { url, archiveType } = await buildDownloadUrl(options, version)
+  let targetBin = `${options.install_path}/elide`
 
-  let targetBin = `${options.target}/elide`
+  if (options.no_cache === true) {
+    console.info('Tool caching is disabled.')
+  }
 
   /* istanbul ignore next */
   if (options.os === ElideOS.WINDOWS) {
-    targetBin = `${options.target}\\elide.exe`
+    targetBin = `${options.install_path}\\elide.exe`
   }
 
   // build resulting tarball path and resolved tool info
   let elidePath: string = targetBin
   /* istanbul ignore next */
-  let elideHome: string = process.env.ELIDE_HOME || options.target
-  const elideBin: string = elideHome // @TODO(sgammon): bin folder?
+  let elideHome: string = process.env.ELIDE_HOME || options.install_path
+  let elidePathTarget = elideHome
+  let elideBin: string = elideHome // @TODO(sgammon): bin folder?
   let elideDir: string | null = null
 
   try {
+    core.debug(
+      `Checking for cached tool 'elide' at version '${version.tag_name}'`
+    )
     elideDir = toolCache.find('elide', version.tag_name, options.arch)
   } catch (err) {
     /* istanbul ignore next */
     core.debug(`Failed to locate Elide in tool cache: ${err}`)
   }
   /* istanbul ignore next */
-  if (options.cache && elideDir) {
+  if (options.no_cache !== true && elideDir) {
     // we have an existing cached copy of elide
     core.debug('Caching enabled and cached Elide release found; using it')
-    elidePath = elideDir
+    elidePath = `${elideDir}/elide`
+    elidePathTarget = elideDir
+    elideBin = elideDir
+    core.info(`Using cached copy of Elide at version ${version.tag_name}`)
   } else {
     /* istanbul ignore next */
-    if (!options.cache) {
+    if (options.no_cache) {
       core.debug(
         'Cache disabled; forcing a fetch of the specified Elide release'
       )
     } else {
       core.debug('Cache enabled but no hit was found; downloading release')
     }
+
+    core.info(`Installing from URL: ${url} (type: ${archiveType})`)
 
     // we do not have an existing copy; download it
     let elideArchive: string | null = null
@@ -265,20 +346,41 @@ async function maybeDownload(
     }
 
     core.debug(`Elide release downloaded to: ${elideArchive}`)
+
     elideHome = await unpackRelease(
       elideArchive,
       elideHome,
       archiveType,
+      version.tag_name,
       options
     )
+    elidePathTarget = elideHome
+
+    if (options.no_cache !== true) {
+      // cache the tool
+      const cachedPath = await toolCache.cacheDir(
+        elideHome,
+        'elide',
+        version.tag_name,
+        options.arch
+      )
+
+      elidePathTarget = cachedPath
+      elideBin = cachedPath
+      core.debug(`Elide release cached at: ${cachedPath}`)
+    } else {
+      core.debug('Tool caching is disabled; not caching downloaded release')
+    }
   }
 
-  return {
+  const result = {
     version,
     elidePath,
-    elideHome,
+    elideHome: elidePathTarget,
     elideBin
   }
+  core.debug(`Elide release info: ${JSON.stringify(result)}`)
+  return result
 }
 
 /**
@@ -295,28 +397,32 @@ export async function downloadRelease(
     try {
       core.debug(`Downloading custom archive: ${options.custom_url}`)
       const customArchive = await toolCache.downloadTool(options.custom_url)
+      const versionTag = options.version_tag || 'dev'
 
       // sniff archive type from URL
       let archiveType: ArchiveType = ArchiveType.GZIP
       /* istanbul ignore next */
-      if (options.custom_url.endsWith('.zip')) {
+      if (options.custom_url.endsWith('.txz')) {
+        archiveType = ArchiveType.TXZ
+      } else if (options.custom_url.endsWith('.zip')) {
         archiveType = ArchiveType.ZIP
       }
 
       /* istanbul ignore next */
-      let elideHome: string = process.env.ELIDE_HOME || options.target
+      let elideHome: string = process.env.ELIDE_HOME || options.install_path
       elideHome = await unpackRelease(
         customArchive,
         elideHome,
         archiveType,
+        versionTag,
         options
       )
       const elideBin = elideHome
       /* istanbul ignore next */
       const elidePath =
         options.os === ElideOS.WINDOWS
-          ? `${elideHome}\\elide.exe`
-          : `${elideHome}/elide`
+          ? `${elideBin}\\elide.exe`
+          : `${elideBin}/elide`
 
       return {
         version: {
