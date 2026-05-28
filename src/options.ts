@@ -1,11 +1,13 @@
 import os from 'node:os'
 import path from 'node:path'
+import * as core from '@actions/core'
 
 /**
  * Enumerates options and maps them to their well-known option names.
  */
 export enum OptionName {
   VERSION = 'version',
+  CHANNEL = 'channel',
   OS = 'os',
   ARCH = 'arch',
   EXPORT_PATH = 'export_path',
@@ -13,8 +15,27 @@ export enum OptionName {
   VERSION_TAG = 'version_tag',
   TOKEN = 'token',
   INSTALL_PATH = 'install_path',
-  FORCE = 'force'
+  FORCE = 'force',
+  NO_CACHE = 'no_cache',
+  INSTALLER = 'installer',
+  TELEMETRY = 'telemetry'
 }
+
+/**
+ * Recognized release channels.
+ */
+export type ElideChannel = 'nightly' | 'preview' | 'release'
+
+/**
+ * Recognized installer methods.
+ */
+export type InstallerMethod =
+  | 'archive'
+  | 'shell'
+  | 'msi'
+  | 'pkg'
+  | 'apt'
+  | 'rpm'
 
 /**
  * Describes the interface provided by setup action configuration, once interpreted and once
@@ -23,6 +44,12 @@ export enum OptionName {
 export interface ElideSetupActionOptions {
   // Desired version of Elide; the special token `latest` resolves the latest version.
   version: string | 'latest'
+
+  // Release channel: 'nightly' (default), 'preview', or 'release'.
+  channel: ElideChannel
+
+  // Installation method: 'archive' (default), 'shell', 'msi', 'pkg', 'apt', or 'rpm'.
+  installer: InstallerMethod
 
   // Whether to setup Elide on the PATH; defaults to `true`.
   export_path: boolean
@@ -42,9 +69,6 @@ export interface ElideSetupActionOptions {
   // Whether to force installation if a copy of Elide is already installed.
   force: boolean
 
-  // Whether to pre-warm the installed copy of Elide; defaults to `true`.
-  prewarm: boolean
-
   // Custom download URL to use in place of interpreted download URLs.
   custom_url?: string
 
@@ -53,6 +77,9 @@ export interface ElideSetupActionOptions {
 
   // Custom GitHub token to use, or the workflow's default token, if any.
   token?: string
+
+  // Whether to send anonymous error telemetry; defaults to `true`.
+  telemetry: boolean
 }
 
 /**
@@ -70,7 +97,6 @@ export const nixDefaultPath = path.resolve(os.homedir(), 'elide')
  */
 export const configPath = path.resolve(os.homedir(), '.elide')
 
-/* istanbul ignore next */
 const defaultTargetPath =
   process.platform === 'win32' ? windowsDefaultPath : nixDefaultPath
 
@@ -79,13 +105,85 @@ const defaultTargetPath =
  */
 export const defaults: ElideSetupActionOptions = {
   version: 'latest',
+  channel: 'nightly',
+  installer: 'archive',
+  telemetry: true,
   no_cache: false,
   export_path: true,
   force: false,
-  prewarm: true,
   os: normalizeOs(process.platform),
   arch: normalizeArch(process.arch),
   install_path: defaultTargetPath
+}
+
+/**
+ * Normalize an installer string to a recognized installer method.
+ */
+export function normalizeInstaller(value: string): InstallerMethod {
+  switch (value.trim().toLowerCase()) {
+    case 'archive':
+      return 'archive'
+    case 'shell':
+      return 'shell'
+    case 'msi':
+      return 'msi'
+    case 'pkg':
+      return 'pkg'
+    case 'apt':
+      return 'apt'
+    case 'rpm':
+      return 'rpm'
+    default:
+      return 'archive'
+  }
+}
+
+/**
+ * Validate that the chosen installer method is compatible with the target OS.
+ * Returns `{ valid: true }` or `{ valid: false, reason: string }`.
+ */
+export function validateInstallerForPlatform(
+  installer: InstallerMethod,
+  targetOs: string
+): { valid: boolean; reason?: string } {
+  switch (installer) {
+    case 'archive':
+    case 'shell':
+      return { valid: true }
+    case 'msi':
+      if (targetOs !== 'windows')
+        return { valid: false, reason: 'MSI is only available on Windows' }
+      return { valid: true }
+    case 'pkg':
+      if (targetOs !== 'darwin')
+        return { valid: false, reason: 'PKG is only available on macOS' }
+      return { valid: true }
+    case 'apt':
+      if (targetOs !== 'linux')
+        return { valid: false, reason: 'apt is only available on Linux' }
+      return { valid: true }
+    case 'rpm':
+      if (targetOs !== 'linux')
+        return { valid: false, reason: 'RPM is only available on Linux' }
+      return { valid: true }
+  }
+}
+
+/**
+ * Normalize a channel string to a recognized channel token.
+ */
+export function normalizeChannel(channel: string): ElideChannel {
+  switch (channel.trim().toLowerCase()) {
+    case 'nightly':
+      return 'nightly'
+    case 'preview':
+      return 'preview'
+    case 'release':
+    case 'stable':
+      return 'release'
+    default:
+      return 'nightly'
+  }
 }
 
 /**
@@ -111,7 +209,6 @@ export function normalizeOs(os: string): 'darwin' | 'windows' | 'linux' {
     case 'linux':
       return 'linux'
   }
-  /* istanbul ignore next */
   throw new Error(`Unrecognized OS: ${os}`)
 }
 
@@ -134,7 +231,6 @@ export function normalizeArch(arch: string): 'amd64' | 'aarch64' {
     case 'arm64':
       return 'aarch64'
   }
-  /* istanbul ignore next */
   throw new Error(`Unrecognized architecture: ${arch}`)
 }
 
@@ -149,11 +245,67 @@ export default function buildOptions(
 ): ElideSetupActionOptions {
   return {
     ...defaults,
-    ...(opts || {}),
-    ...{
-      // force-normalize the OS and arch
-      os: normalizeOs(opts?.os || defaults.os),
-      arch: normalizeArch(opts?.arch || defaults.arch)
-    }
+    ...opts,
+    // force-normalize the OS and arch
+    os: normalizeOs(opts?.os || defaults.os),
+    arch: normalizeArch(opts?.arch || defaults.arch)
   } satisfies ElideSetupActionOptions
+}
+
+const SENSITIVE_INPUT_NAMES = new Set([OptionName.TOKEN, 'secret', 'password'])
+
+function isSensitiveInput(name: string): boolean {
+  return (
+    SENSITIVE_INPUT_NAMES.has(name) ||
+    name.toLowerCase().includes('token') ||
+    name.toLowerCase().includes('secret')
+  )
+}
+
+function stringInput(name: string, defaultValue?: string): string | undefined {
+  const value = core.getInput(name)
+  if (isSensitiveInput(name)) {
+    core.debug(
+      `Input: ${name}=${value ? '<redacted>' : defaultValue ? '<redacted>' : '<empty>'}`
+    )
+  } else {
+    core.debug(`Input: ${name}=${value || defaultValue}`)
+  }
+  return value || defaultValue || undefined
+}
+
+function booleanInput(name: string, defaultValue: boolean): boolean {
+  try {
+    return core.getBooleanInput(name)
+  } catch {
+    return defaultValue
+  }
+}
+
+/**
+ * Build action options by reading GitHub Actions inputs via core.getInput.
+ */
+export function buildOptionsFromInputs(): ElideSetupActionOptions {
+  return buildOptions({
+    version: stringInput(OptionName.VERSION, 'latest'),
+    installer: normalizeInstaller(
+      stringInput(OptionName.INSTALLER, 'archive') as string
+    ),
+    install_path: stringInput(
+      OptionName.INSTALL_PATH,
+      process.env.ELIDE_HOME || defaults.install_path
+    ),
+    os: normalizeOs(stringInput(OptionName.OS, process.platform) as string),
+    arch: normalizeArch(stringInput(OptionName.ARCH, process.arch) as string),
+    channel: normalizeChannel(
+      stringInput(OptionName.CHANNEL, 'nightly') as string
+    ),
+    force: booleanInput(OptionName.FORCE, false),
+    export_path: booleanInput(OptionName.EXPORT_PATH, true),
+    no_cache: booleanInput(OptionName.NO_CACHE, false),
+    telemetry: booleanInput(OptionName.TELEMETRY, true),
+    token: stringInput(OptionName.TOKEN, process.env.GITHUB_TOKEN),
+    custom_url: stringInput(OptionName.CUSTOM_URL),
+    version_tag: stringInput(OptionName.VERSION_TAG)
+  })
 }

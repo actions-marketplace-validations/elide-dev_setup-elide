@@ -11,6 +11,11 @@ inputs:
     required: false
     default: 'latest'
 
+  channel:
+    description: 'Channel'
+    required: false
+    default: 'nightly'
+
   os:
     description: 'OS'
     required: false
@@ -19,7 +24,12 @@ inputs:
     description: 'Architecture'
     required: false
 
-  target:
+  installer:
+    description: 'Installation method: archive, shell, msi, pkg, apt, or rpm'
+    required: false
+    default: 'archive'
+
+  install_path:
     description: 'Custom install path'
     required: false
 
@@ -30,20 +40,46 @@ inputs:
   export_path:
     description: 'Export to Path'
     required: false
-    default: true
+    default: 'true'
+
+  no_cache:
+    description: 'Disable tool caching'
+    required: false
+    default: 'false'
+
+  telemetry:
+    description: 'Enable anonymous error telemetry'
+    required: false
+    default: 'true'
 
   custom_url:
     description: 'Custom Download URL'
     required: false
 
+  version_tag:
+    description: 'Version tag for custom download URL'
+    required: false
+
   token:
     description: 'GitHub Token'
     required: false
+    default: ${{ github.token }}
 
 outputs:
   path:
     description: 'Path to Elide'
 
+  version:
+    description: 'Installed Elide version'
+
+  cached:
+    description: 'Whether a cached installation was used'
+
+  installer:
+    description: 'Effective installer method used'
+
 runs:
-  using: node20
+  using: node24
   main: dist/index.js
+  post: dist/post.js
+  post-if: always()

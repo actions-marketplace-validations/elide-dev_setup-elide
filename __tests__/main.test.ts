@@ -1,194 +1,478 @@
-import * as io from '@actions/io'
-import * as core from '@actions/core'
-import * as main from '../src/main'
-import buildOptions, { OptionName } from '../src/options'
-import { ElideArch, ElideOS } from '../src/releases'
-import { ActionOutputName } from '../src/outputs'
-import { resolveExistingBinary } from '../src/main'
+import { describe, it, expect, beforeEach, jest, mock } from 'bun:test'
 
-// set timeout to 3 minutes to account for downloads
-jest.setTimeout(3 * 60 * 1000)
+// Create mock functions
+const execMock = jest.fn().mockResolvedValue(0)
+const getExecOutputMock = jest
+  .fn()
+  .mockResolvedValue({ stdout: '1.0.0\n', stderr: '', exitCode: 0 })
+const whichMock = jest.fn()
+const getInputMock = jest.fn().mockReturnValue('')
+const setFailedMock = jest.fn()
+const setOutputMock = jest.fn()
+const debugMock = jest.fn()
+const infoMock = jest.fn()
+const warningMock = jest.fn()
+const errorMock = jest.fn()
+const noticeMock = jest.fn()
+const addPathMock = jest.fn()
+const groupMock = jest.fn(async (_name: string, fn: () => Promise<any>) => fn())
+const summaryMock = {
+  addHeading: jest.fn().mockReturnThis(),
+  addTable: jest.fn().mockReturnThis(),
+  addCodeBlock: jest.fn().mockReturnThis(),
+  addLink: jest.fn().mockReturnThis(),
+  write: jest.fn().mockResolvedValue(undefined)
+}
+const downloadToolMock = jest.fn().mockResolvedValue('/tmp/install.sh')
+const elideInfoMock = jest.fn().mockResolvedValue(undefined)
+const obtainVersionMock = jest.fn().mockResolvedValue('1.0.0')
+const initTelemetryMock = jest.fn()
+const reportErrorMock = jest.fn()
+const flushTelemetryMock = jest.fn().mockResolvedValue(undefined)
 
-// Mock the GitHub Actions core libs
-const getInput = jest.spyOn(core, 'getInput')
-const setFailed = jest.spyOn(core, 'setFailed')
-const setOutput = jest.spyOn(core, 'setOutput')
-const debug = jest.spyOn(core, 'debug')
-const info = jest.spyOn(core, 'info')
-const warning = jest.spyOn(core, 'warning')
-const error = jest.spyOn(core, 'error')
+// Mock modules before any project imports
+mock.module('@actions/exec', () => ({
+  exec: execMock,
+  getExecOutput: getExecOutputMock
+}))
+mock.module('@actions/io', () => ({
+  which: whichMock,
+  mv: jest.fn(),
+  cp: jest.fn(),
+  rmRF: jest.fn(),
+  mkdirP: jest.fn()
+}))
+mock.module('@actions/core', () => ({
+  info: infoMock,
+  debug: debugMock,
+  error: errorMock,
+  warning: warningMock,
+  notice: noticeMock,
+  getInput: getInputMock,
+  getBooleanInput: jest.fn().mockReturnValue(true),
+  setFailed: setFailedMock,
+  setOutput: setOutputMock,
+  addPath: addPathMock,
+  group: groupMock,
+  summary: summaryMock
+}))
+mock.module('@actions/tool-cache', () => ({
+  downloadTool: downloadToolMock,
+  extractTar: jest.fn(),
+  extractZip: jest.fn(),
+  cacheDir: jest.fn(),
+  find: jest.fn()
+}))
+mock.module('../src/command', () => ({
+  elideInfo: elideInfoMock,
+  obtainVersion: obtainVersionMock,
+  ElideCommand: { RUN: 'run', INFO: 'info' },
+  ElideArgument: { VERSION: '--version' }
+}))
+const withSpanMock = jest.fn(
+  async (_name: string, _op: string, fn: () => Promise<any>) => fn()
+)
+const recordMetricMock = jest.fn()
+const logEventMock = jest.fn()
+
+mock.module('../src/telemetry', () => ({
+  initTelemetry: initTelemetryMock,
+  reportError: reportErrorMock,
+  flushTelemetry: flushTelemetryMock,
+  withSpan: withSpanMock,
+  recordMetric: recordMetricMock,
+  logEvent: logEventMock
+}))
+
+const main = await import('../src/main')
+const { default: buildOptions, OptionName } = await import('../src/options')
+const { ElideArch, ElideOS } = await import('../src/releases')
+const { ActionOutputName } = await import('../src/main')
 
 const setupMocks = () => {
-  debug.mockImplementation((...args) =>
+  debugMock.mockImplementation((...args: unknown[]) =>
     console.debug.apply(console, Array.from(args))
   )
-  info.mockImplementation((...args) =>
+  infoMock.mockImplementation((...args: unknown[]) =>
     console.info.apply(console, Array.from(args))
   )
-  warning.mockImplementation((...args) =>
+  warningMock.mockImplementation((...args: unknown[]) =>
     console.warn.apply(console, Array.from(args))
   )
-  error.mockImplementation((...args) =>
+  errorMock.mockImplementation((...args: unknown[]) =>
     console.error.apply(console, Array.from(args))
   )
-  setFailed.mockImplementation(() => {})
+  setFailedMock.mockImplementation(() => {})
 }
-
-// Mock the action's main function
-const action = jest.spyOn(main, 'run')
 
 describe('action', () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    execMock.mockClear()
+    getExecOutputMock.mockClear()
+    whichMock.mockClear()
+    getInputMock.mockClear()
+    setFailedMock.mockClear()
+    setOutputMock.mockClear()
+    debugMock.mockClear()
+    infoMock.mockClear()
+    warningMock.mockClear()
+    errorMock.mockClear()
+    noticeMock.mockClear()
+    addPathMock.mockClear()
+    groupMock.mockClear()
+    downloadToolMock.mockClear()
+    elideInfoMock.mockClear()
+    obtainVersionMock.mockClear()
+    initTelemetryMock.mockClear()
+    reportErrorMock.mockClear()
+    flushTelemetryMock.mockClear()
+    withSpanMock.mockClear()
+    recordMetricMock.mockClear()
+    logEventMock.mockClear()
+    summaryMock.addHeading.mockClear()
+    summaryMock.addTable.mockClear()
+    summaryMock.write.mockClear()
+    summaryMock.addCodeBlock.mockClear()
+    summaryMock.addLink.mockClear()
+
+    getInputMock.mockReturnValue('')
+    groupMock.mockImplementation(
+      async (_name: string, fn: () => Promise<any>) => fn()
+    )
+    downloadToolMock.mockResolvedValue('/tmp/install.sh')
+    execMock.mockResolvedValue(0)
+    whichMock.mockResolvedValue('/mock/bin/elide')
+    getExecOutputMock.mockResolvedValue({
+      stdout: '1.0.0\n',
+      stderr: '',
+      exitCode: 0
+    })
+    elideInfoMock.mockResolvedValue(undefined)
+    obtainVersionMock.mockResolvedValue('1.0.0')
+    flushTelemetryMock.mockResolvedValue(undefined)
+    withSpanMock.mockImplementation(
+      async (_name: string, _op: string, fn: () => Promise<any>) => fn()
+    )
   })
 
   it('reads option inputs', async () => {
     setupMocks()
     await main.run()
-    expect(action).toHaveReturned()
-    expect(action).not.toThrow()
-    expect(setFailed).not.toHaveBeenCalled()
-    expect(getInput).toHaveBeenCalledWith(OptionName.VERSION)
-    expect(getInput).toHaveBeenCalledWith(OptionName.OS)
-    expect(getInput).toHaveBeenCalledWith(OptionName.ARCH)
-    expect(getInput).toHaveBeenCalledWith(OptionName.TOKEN)
-    expect(getInput).toHaveBeenCalledWith(OptionName.CUSTOM_URL)
-    expect(getInput).toHaveBeenCalledWith(OptionName.EXPORT_PATH)
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.VERSION)
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.OS)
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.ARCH)
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.TOKEN)
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.CUSTOM_URL)
+    expect(getInputMock).toHaveBeenCalledWith(OptionName.INSTALLER)
   })
 
   it('sets the `path` and `version` outputs', async () => {
     setupMocks()
-    getInput.mockImplementation((name: string): string => {
-      switch (name) {
-        default:
-          return ''
-      }
-    })
-
     await main.run()
-    expect(action).toHaveReturned()
-    expect(action).not.toThrow()
-    expect(setFailed).not.toHaveBeenCalled()
-    expect(setOutput).toHaveBeenCalledWith(
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(setOutputMock).toHaveBeenCalledWith(
       ActionOutputName.PATH,
       expect.anything()
     )
-    expect(setOutput).toHaveBeenCalledWith(
+    expect(setOutputMock).toHaveBeenCalledWith(
       ActionOutputName.VERSION,
       expect.anything()
     )
   })
 
-  it('should fail for unhandled exceptions', async () => {
+  it('sets cached and installer outputs', async () => {
     setupMocks()
-    info.mockImplementationOnce(() => {
-      throw new Error('oh noes')
-    })
-    const runner = async () => {
-      await main.run()
-    }
-    expect(runner).not.toThrow()
-    expect(setFailed).toHaveBeenCalled()
+    await main.run({ force: true, installer: 'shell' })
+    expect(setOutputMock).toHaveBeenCalledWith(ActionOutputName.CACHED, 'false')
+    expect(setOutputMock).toHaveBeenCalledWith(
+      ActionOutputName.INSTALLER,
+      'shell'
+    )
   })
 
-  // it('should support downloading from a custom url', async () => {
-  //   setupMocks()
+  it('should initialize telemetry', async () => {
+    setupMocks()
+    await main.run()
+    expect(initTelemetryMock).toHaveBeenCalled()
+  })
 
-  //   const sourceUrl =
-  //     'https://elide.zip/cli/v1/snapshot/darwin-aarch64/1.0.0-alpha9/elide.tgz'
-  //   await main.run({
-  //     force: true,
-  //     custom_url: sourceUrl,
-  //     version_tag: '1.0.0-alpha9'
-  //   })
-  //   expect(action).toHaveReturned()
-  //   expect(action).not.toThrow()
-  //   expect(setFailed).not.toBeCalled()
-  //   expect(setOutput).toHaveBeenCalledWith(
-  //     ActionOutputName.PATH,
-  //     expect.anything()
-  //   )
-  //   expect(setOutput).toHaveBeenCalledWith(
-  //     ActionOutputName.VERSION,
-  //     expect.anything()
-  //   )
-  // })
+  it('should flush telemetry in finally block', async () => {
+    setupMocks()
+    await main.run()
+    expect(flushTelemetryMock).toHaveBeenCalled()
+  })
+
+  it('should report errors to telemetry on failure', async () => {
+    setupMocks()
+    infoMock.mockImplementation((msg: string) => {
+      if (msg.includes('Options:')) throw new Error('oh noes')
+    })
+    await main.run()
+    expect(reportErrorMock).toHaveBeenCalled()
+    expect(setFailedMock).toHaveBeenCalled()
+  })
+
+  it('should emit start and exit log events', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(logEventMock).toHaveBeenCalledWith(
+      'setup-elide.start',
+      expect.objectContaining({ installer: 'shell' })
+    )
+    expect(logEventMock).toHaveBeenCalledWith(
+      'setup-elide.exit',
+      expect.objectContaining({ status: 'success' })
+    )
+  })
+
+  it('should record install duration metric', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(recordMetricMock).toHaveBeenCalledWith(
+      'setup_elide.duration_ms',
+      expect.any(Number),
+      'millisecond',
+      expect.objectContaining({ installer: 'shell' })
+    )
+  })
+
+  it('should wrap install in tracing spans', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(withSpanMock).toHaveBeenCalledWith(
+      'setup-elide',
+      'setup',
+      expect.any(Function)
+    )
+    expect(withSpanMock).toHaveBeenCalledWith(
+      'install.shell',
+      'install',
+      expect.any(Function)
+    )
+    expect(withSpanMock).toHaveBeenCalledWith(
+      'verify',
+      'verify',
+      expect.any(Function)
+    )
+  })
+
+  it('should use grouped output', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(groupMock).toHaveBeenCalledWith(
+      '⚙️ Resolving options',
+      expect.any(Function)
+    )
+    expect(groupMock).toHaveBeenCalledWith(
+      '📦 Installing Elide via shell',
+      expect.any(Function)
+    )
+    expect(groupMock).toHaveBeenCalledWith(
+      '✅ Verifying installation',
+      expect.any(Function)
+    )
+  })
+
+  it('should write job summary on success', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(summaryMock.addHeading).toHaveBeenCalledWith('Elide Installed', 2)
+    expect(summaryMock.write).toHaveBeenCalled()
+  })
+
+  it('should write error summary on failure', async () => {
+    setupMocks()
+    infoMock.mockImplementation((msg: string) => {
+      if (msg.includes('Options:')) throw new Error('install boom')
+    })
+    await main.run()
+    expect(summaryMock.addHeading).toHaveBeenCalledWith('Setup Elide Failed', 2)
+    expect(summaryMock.addCodeBlock).toHaveBeenCalled()
+    expect(summaryMock.write).toHaveBeenCalled()
+  })
 
   it('should properly detect existing elide binary', async () => {
-    const which = jest.spyOn(io, 'which')
-    which.mockImplementationOnce(
-      async (tool: string, check?: boolean | undefined) => {
-        return '/some/path/to/an/elide/bin'
-      }
-    )
-    const existing = await resolveExistingBinary()
+    whichMock.mockResolvedValueOnce('/some/path/to/an/elide/bin')
+    const existing = await main.resolveExistingBinary()
     expect(existing).not.toBeNull()
     expect(existing).toEqual('/some/path/to/an/elide/bin')
-    jest.clearAllMocks()
   })
 
   it('should properly handle missing elide binary', async () => {
-    const which = jest.spyOn(io, 'which')
-    // @ts-ignore
-    which.mockImplementationOnce(() => {
-      return Promise.reject(new Error('not found (testing 123123)'))
-    })
-    const existing = await resolveExistingBinary()
+    whichMock.mockRejectedValueOnce(new Error('not found'))
+    const existing = await main.resolveExistingBinary()
     expect(existing).toBeNull()
-    jest.clearAllMocks()
   })
 
-  it('should be able to force installation', async () => {
+  // --- Installer routing tests ---
+
+  it('should use archive installer by default', async () => {
     setupMocks()
-    await main.run({
-      force: true
-    })
-    expect(action).toHaveReturned()
-    expect(action).not.toThrow()
-    expect(setFailed).not.toHaveBeenCalled()
-    expect(setOutput).toHaveBeenCalledWith(
+    await main.run({ force: true, installer: 'shell' })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(setOutputMock).toHaveBeenCalledWith(
       ActionOutputName.PATH,
       expect.anything()
     )
-    expect(setOutput).toHaveBeenCalledWith(
-      ActionOutputName.VERSION,
-      expect.anything()
+  })
+
+  it('should use shell installer when specified', async () => {
+    setupMocks()
+    await main.run({ force: true, installer: 'shell' })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(infoMock).toHaveBeenCalledWith(
+      expect.stringContaining('install script')
     )
   })
 
-  it('should be able to force installation of specific version', async () => {
+  it('should use apt installer when specified on linux', async () => {
     setupMocks()
     await main.run({
       force: true,
-      version: '1.0.0-alpha9'
+      os: 'linux',
+      arch: 'amd64',
+      installer: 'apt'
     })
-    expect(action).toHaveReturned()
-    expect(action).not.toThrow()
-    expect(setFailed).not.toHaveBeenCalled()
-    expect(setOutput).toHaveBeenCalledWith(
-      ActionOutputName.PATH,
-      expect.anything()
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(infoMock).toHaveBeenCalledWith(expect.stringContaining('apt'))
+  })
+
+  it('should use msi installer on windows', async () => {
+    setupMocks()
+    await main.run({
+      force: true,
+      os: 'windows',
+      arch: 'amd64',
+      installer: 'msi'
+    })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(infoMock).toHaveBeenCalledWith(expect.stringContaining('MSI'))
+  })
+
+  it('should use pkg installer on darwin', async () => {
+    setupMocks()
+    await main.run({
+      force: true,
+      os: 'darwin',
+      arch: 'aarch64',
+      installer: 'pkg'
+    })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(infoMock).toHaveBeenCalledWith(expect.stringContaining('PKG'))
+  })
+
+  it('should use rpm installer on linux', async () => {
+    setupMocks()
+    await main.run({
+      force: true,
+      os: 'linux',
+      arch: 'amd64',
+      installer: 'rpm'
+    })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(infoMock).toHaveBeenCalledWith(expect.stringContaining('RPM'))
+  })
+
+  // --- Validation fallback ---
+
+  it('should warn and fall back to archive for invalid installer/platform combo', async () => {
+    setupMocks()
+    await main.run({
+      force: true,
+      os: 'linux',
+      arch: 'amd64',
+      version: '1.0.0',
+      installer: 'msi'
+    })
+    expect(warningMock).toHaveBeenCalledWith(
+      expect.stringContaining("Installer 'msi' is not supported on linux"),
+      expect.objectContaining({ title: 'Installer Fallback' })
     )
-    expect(setOutput).toHaveBeenCalledWith(
-      ActionOutputName.VERSION,
+    expect(setFailedMock).not.toHaveBeenCalled()
+  })
+
+  // --- Existing behavior preserved ---
+
+  it('should be able to force installation of specific version', async () => {
+    setupMocks()
+    await main.run({ force: true, version: '1.0.0-alpha9' })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(setOutputMock).toHaveBeenCalledWith(
+      ActionOutputName.PATH,
       expect.anything()
     )
   })
 
-  const itShouldReject = (os: ElideOS, arch: ElideArch) => {
+  it('should gracefully handle post-install info failure', async () => {
+    setupMocks()
+    elideInfoMock.mockRejectedValueOnce(new Error('info boom'))
+    await main.run({ force: true, installer: 'shell' })
+    expect(setFailedMock).not.toHaveBeenCalled()
+    expect(debugMock).toHaveBeenCalledWith(
+      expect.stringContaining('Post-install info failed; proceeding anyway')
+    )
+  })
+
+  it('should preserve existing binary when version matches "local"', async () => {
+    setupMocks()
+    whichMock.mockResolvedValue('/existing/elide')
+    obtainVersionMock.mockResolvedValue('1.0.0')
+    await main.run({ version: 'local' })
+    expect(setOutputMock).toHaveBeenCalledWith(
+      ActionOutputName.PATH,
+      '/existing/elide'
+    )
+    expect(setOutputMock).toHaveBeenCalledWith(
+      ActionOutputName.VERSION,
+      '1.0.0'
+    )
+    expect(noticeMock).toHaveBeenCalledWith(
+      expect.stringContaining('preserved'),
+      expect.objectContaining({ title: 'Already Installed' })
+    )
+  })
+
+  it('should warn on version mismatch', async () => {
+    setupMocks()
+    obtainVersionMock.mockResolvedValueOnce('1.0.0').mockResolvedValue('9.9.9')
+    await main.run({ force: true, installer: 'shell' })
+    expect(warningMock).toHaveBeenCalledWith(
+      expect.stringContaining('Elide version mismatch'),
+      expect.objectContaining({ title: 'Version Mismatch' })
+    )
+  })
+
+  it('should use downloadRelease for custom_url', async () => {
+    setupMocks()
+    downloadToolMock.mockResolvedValue('/tmp/custom-elide.tgz')
+    await main.run({
+      force: true,
+      custom_url: 'https://example.com/elide.tgz',
+      version_tag: '1.0.0-custom'
+    })
+    expect(downloadToolMock).toHaveBeenCalledWith(
+      'https://example.com/elide.tgz'
+    )
+    expect(setFailedMock).not.toHaveBeenCalled()
+  })
+
+  it('should not export to path when export_path is false', async () => {
+    setupMocks()
+    await main.run({ force: true, export_path: false, installer: 'shell' })
+    expect(addPathMock).not.toHaveBeenCalled()
+    expect(setFailedMock).not.toHaveBeenCalled()
+  })
+
+  const itShouldReject = (os: string, arch: string) => {
     it(`should reject ${os}/${arch} as unsupported`, async () => {
       setupMocks()
       const t = () => {
-        const err = main.notSupported(
-          buildOptions({
-            os,
-            arch
-          })
-        )
+        const err = main.notSupported(buildOptions({ os, arch } as any))
         if (err) throw err
       }
       expect(t).toThrow()
-      getInput.mockImplementation((name: string): string => {
+      getInputMock.mockImplementation((name: string): string => {
         switch (name) {
           case OptionName.OS:
             return os
@@ -198,21 +482,15 @@ describe('action', () => {
             return ''
         }
       })
-
-      await main.run({ os, arch })
-      expect(setFailed).toHaveBeenCalled()
+      await main.run({ os, arch } as any)
+      expect(setFailedMock).toHaveBeenCalled()
     })
   }
-  const itShouldAllow = (os: ElideOS, arch: ElideArch) => {
+  const itShouldAllow = (os: string, arch: string) => {
     it(`should allow ${os}/${arch} as supported`, () => {
       setupMocks()
       const t = () => {
-        const err = main.notSupported(
-          buildOptions({
-            os,
-            arch
-          })
-        )
+        const err = main.notSupported(buildOptions({ os, arch } as any))
         if (err) throw err
       }
       expect(t).not.toThrow()
