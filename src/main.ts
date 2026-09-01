@@ -33,6 +33,16 @@ import { installViaMsi } from './install-msi'
 import { installViaPkg } from './install-pkg'
 import { installViaRpm } from './install-rpm'
 
+/**
+ * Returns true if a binary's self-reported version corresponds to the requested
+ * tag. An exact match always qualifies; a commit-hash suffix separated by a dot
+ * (e.g. "1.4.0+20260707.6f7ffa7" for tag "1.4.0+20260707") also qualifies,
+ * because the binary appends ".{commithash}" to the tag it was built from.
+ */
+export function versionMatchesTag(ver: string, tag: string): boolean {
+  return ver === tag || ver.startsWith(tag + '.')
+}
+
 export function notSupported(options: ElideSetupActionOptions): null | Error {
   const spec = `${options.os}-${options.arch}`
   switch (spec) {
@@ -183,7 +193,7 @@ export async function run(
           const version = await obtainVersion(existing)
 
           if (
-            version === effectiveOptions.version ||
+            versionMatchesTag(version, effectiveOptions.version) ||
             effectiveOptions.version === 'local'
           ) {
             core.notice(`Existing Elide ${version} preserved at ${existing}`, {
@@ -255,7 +265,12 @@ export async function run(
             const ver = await obtainVersion(release.elidePath)
 
             const isNightly = release.version.tag_name.startsWith('nightly-')
-            if (!isNightly && ver !== release.version.tag_name) {
+            const isSymbolic = release.version.tag_name === 'latest'
+            if (
+              !isNightly &&
+              !isSymbolic &&
+              !versionMatchesTag(ver, release.version.tag_name)
+            ) {
               core.warning(
                 `Elide version mismatch: expected '${release.version.tag_name}', but got '${ver}'`,
                 { title: 'Version Mismatch' }
